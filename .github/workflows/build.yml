@@ -1,0 +1,60 @@
+name: Build HexedRadar
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to attach files to a release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch AML headers
+        run: |
+          git clone --depth 1 https://github.com/RusJJ/AML.git /tmp/AML
+          H=$(find /tmp/AML -name amlmod.h | head -n1)
+          test -n "$H" || { echo "amlmod.h not found in AML repo"; exit 1; }
+          mkdir -p jni/include/mod
+          cp "$(dirname "$H")"/*.h jni/include/mod/
+          ls jni/include/mod
+
+      - name: Build libHexedRadar.so (armeabi-v7a)
+        run: |
+          "$ANDROID_NDK_LATEST_HOME/ndk-build" \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            NDK_APPLICATION_MK=jni/Application.mk \
+            -j"$(nproc)"
+
+      - name: Verify exports
+        run: |
+          SO=libs/armeabi-v7a/libHexedRadar.so
+          test -f "$SO"
+          nm -D --defined-only "$SO" | grep HexedRadar_ | tee /dev/stderr | grep -q HexedRadar_SetZoom
+
+      - name: Package
+        run: |
+          mkdir -p dist/HexedRadar
+          cp libs/armeabi-v7a/libHexedRadar.so dist/HexedRadar/
+          cp "lua/Hexed Radar Adjuster.lua" dist/HexedRadar/
+          cd dist && zip -r HexedRadar-armeabi-v7a.zip HexedRadar
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HexedRadar-armeabi-v7a
+          path: dist/HexedRadar-armeabi-v7a.zip
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/HexedRadar-armeabi-v7a.zip
