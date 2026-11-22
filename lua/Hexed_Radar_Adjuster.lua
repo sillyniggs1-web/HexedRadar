@@ -1,6 +1,6 @@
 script_name("Hexed Radar Adjuster")
 script_author("HEXED Studio")
-script_version("1.1")
+script_version("1.2")
 if script_properties then pcall(script_properties, "work-in-pause") end
 require "lib.moonloader"
 local imgui  = require("mimgui")
@@ -8,85 +8,129 @@ local inicfg = require("inicfg")
 local ffi    = require("ffi")
 local DPI    = MONET_DPI_SCALE or 1
 
--- ===== native backend: libHexedRadar.so (ours) or libMultiSA.so (MultiSA client) =====
-local R = { lib = nil, kind = "none", err = "" }
+-- ===================== native link (same method as HexedVoiceMod_Menu) =====================
+pcall(ffi.cdef, [[
+    void* dlopen(const char* name, int flags);
+    void* dlsym(void* handle, const char* symbol);
+]])
 
--- AML loads mods with its own dlopen, so find the already-loaded .so path in /proc/self/maps (same as Discord_RPC helper)
-local function findLoaded(word)
+local R = { kind = "none", f = nil, log = {}, tried = false }
+local function note(s) R.log[#R.log + 1] = s if #R.log > 60 then table.remove(R.log, 1) end end
+
+-- key = { exported symbol, function pointer type, optional }
+local SYM_HEXED = {
+    setZoom = { "HexedRadar_SetZoom",  "void(*)(int)" },
+    setTilt = { "HexedRadar_SetTilt",  "void(*)(int)" },
+    getZoom = { "HexedRadar_GetZoom",  "int(*)(void)" },
+    getTilt = { "HexedRadar_GetTilt",  "int(*)(void)" },
+    enabled = { "HexedRadar_SetEnabled", "void(*)(int)", true },
+    status  = { "HexedRadar_Status",   "int(*)(void)", true },
+}
+local SYM_MULTI = {
+    setZoom = { "_ZN7Radar3D7SetZoomEi", "void(*)(int)" },
+    setTilt = { "_ZN7Radar3D7SetTiltEi", "void(*)(int)" },
+    getZoom = { "_ZN7Radar3D7GetZoomEv", "int(*)(void)" },
+    getTilt = { "_ZN7Radar3D7GetTiltEv", "int(*)(void)" },
+    preview = { "_ZN7Radar3D10SetPreviewEb", "void(*)(bool)", true },
+}
+
+local function bind(handle, map)
+    local t = {}
+    for k, v in pairs(map) do
+        local s = ffi.C.dlsym(handle, v[1])
+        if s == nil then
+            if not v[3] then return nil, v[1] end
+        else
+            t[k] = ffi.cast(v[2], s)
+        end
+    end
+    return t
+end
+
+local function tryHandle(h, map, what)
+    if h == nil then note(what .. ": no handle") return nil end
+    local t, miss = bind(h, map)
+    if t then note(what .. ": OK") return t end
+    note(what .. ": handle ok, symbol missing: " .. tostring(miss))
+end
+
+local SKIP = { "/system/", "/apex/", "/vendor/", "/product/", "/odm/", "/system_ext/" }
+local function skipPath(p)
+    for _, s in ipairs(SKIP) do if p:sub(1, #s) == s then return true end end
+end
+
+local function mapsList(word)
+    local named, others, seen = {}, {}, {}
     local f = io.open("/proc/self/maps", "r")
-    local path
-    if f then
-        for line in f:lines() do
-            local p = line:match("(/%S*%.so)%s*$")
-            if p and p:match("([^/]+)$"):lower():find(word, 1, true) then path = p break end
+    if not f then note("cannot open /proc/self/maps") return named, others end
+    for line in f:lines() do
+        local p = line:match("(/[^%s]+%.so)")
+        if p and not seen[p] then
+            seen[p] = true
+            if p:lower():find(word, 1, true) then named[#named + 1] = p
+            elseif not skipPath(p) then others[#others + 1] = p end
         end
-        f:close()
     end
-    return path
+    f:close()
+    return named, others
 end
 
-local function tryHexed()
-    pcall(ffi.cdef, [[ void HexedRadar_SetZoom(int); void HexedRadar_SetTilt(int);
-               int  HexedRadar_GetZoom(void); int HexedRadar_GetTilt(void);
-               void HexedRadar_SetEnabled(int); int HexedRadar_Status(void); ]])
-    for _, what in ipairs({ findLoaded("hexedradar"), "libHexedRadar.so", "HexedRadar" }) do
-        if what then
-            local ok, lib = pcall(ffi.load, what)
-            if ok and lib then
-                local ok2, fn = pcall(function() return lib.HexedRadar_GetZoom end)
-                if ok2 and fn then return lib end
-            end
+local function link(libName, word, map)
+    -- 1) RTLD_NOW|RTLD_NOLOAD (6): succeeds only if AML already loaded the mod
+    local ok, h = pcall(function() return ffi.C.dlopen(libName, 6) end)
+    local t = ok and tryHandle(h, map, "dlopen(" .. libName .. ",NOLOAD)")
+    if t then return t end
+    -- 2) real path from the process maps (named matches first, then any non-system .so: AML may use a renamed copy)
+    local named, others = mapsList(word)
+    note(("maps: %d named '%s', %d other .so"):format(#named, word, #others))
+    for _, list in ipairs({ named, others }) do
+        for _, p in ipairs(list) do
+            local ok2, h2 = pcall(function() return ffi.C.dlopen(p, 6) end)
+            t = ok2 and tryHandle(h2, map, p:match("([^/]+)$") or p)
+            if t then return t end
         end
     end
-    error("libHexedRadar.so not loaded (is it in the AML mods folder?)")
-end
-local function tryMulti()
-    pcall(ffi.cdef, [[ void _ZN7Radar3D7SetZoomEi(int); void _ZN7Radar3D7SetTiltEi(int);
-               int  _ZN7Radar3D7GetZoomEv(void); int _ZN7Radar3D7GetTiltEv(void);
-               void _ZN7Radar3D10SetPreviewEb(bool); ]])
-    local lib = ffi.load("MultiSA")
-    local _ = lib._ZN7Radar3D7GetZoomEv
-    return lib
+    -- 3) plain dlopen by name (loads it if it was not loaded)
+    local ok3, h3 = pcall(function() return ffi.C.dlopen(libName, 2) end)
+    return ok3 and tryHandle(h3, map, "dlopen(" .. libName .. ")")
 end
 
 local function initBackend()
-    local ok, lib = pcall(tryHexed)
-    if ok then R.lib, R.kind = lib, "hexed" return end
-    R.err = tostring(lib)
-    ok, lib = pcall(tryMulti)
-    if ok then R.lib, R.kind = lib, "multisa" return end
-    R.err = R.err .. " | " .. tostring(lib)
+    R.log = {}
+    local t = link("libHexedRadar.so", "hexedradar", SYM_HEXED)
+    if t then R.f, R.kind = t, "hexed" return end
+    note("libHexedRadar.so not found, trying MultiSA client")
+    t = link("libMultiSA.so", "multisa", SYM_MULTI)
+    if t then R.f, R.kind = t, "multisa" return end
+    R.kind = "none"
 end
 
 local function nSet(zoom, tilt)
-    if not R.lib then return end
-    pcall(function()
-        if R.kind == "hexed" then
-            R.lib.HexedRadar_SetZoom(zoom); R.lib.HexedRadar_SetTilt(tilt)
-        else
-            R.lib._ZN7Radar3D7SetZoomEi(zoom); R.lib._ZN7Radar3D7SetTiltEi(tilt)
-        end
-    end)
+    if R.f then pcall(function() R.f.setZoom(zoom); R.f.setTilt(tilt) end) end
 end
 local function nEnabled(on)
-    if R.kind == "hexed" then pcall(function() R.lib.HexedRadar_SetEnabled(on and 1 or 0) end) end
+    if R.f and R.f.enabled then pcall(function() R.f.enabled(on and 1 or 0) end) end
 end
 local function nPreview(on)
-    if R.kind == "multisa" then pcall(function() R.lib._ZN7Radar3D10SetPreviewEb(on) end) end
+    if R.f and R.f.preview then pcall(function() R.f.preview(on) end) end
 end
 local function nGet()
-    if not R.lib then return nil, nil end
-    local ok, z, t = pcall(function()
-        if R.kind == "hexed" then return R.lib.HexedRadar_GetZoom(), R.lib.HexedRadar_GetTilt() end
-        return R.lib._ZN7Radar3D7GetZoomEv(), R.lib._ZN7Radar3D7GetTiltEv()
-    end)
+    if not R.f then return nil end
+    local ok, z, t = pcall(function() return R.f.getZoom(), R.f.getTilt() end)
     if ok then return z, t end
 end
+local function nStatus()
+    if R.f and R.f.status then
+        local ok, v = pcall(function() return R.f.status() end)
+        if ok then return v end
+    end
+    return 0
+end
 
--- ===== config =====
+-- ===================== config =====================
 local ZMIN, ZMAX, TMIN, TMAX = 50, 250, 0, 60
 local cfg = inicfg.load({
-    radar = { enabled = true, zoom = 100, tilt = 0, preview = false },
+    radar = { enabled = true, zoom = 100, tilt = 0 },
     meta  = { ver = 1 },
 }, "Hexed Radar.ini")
 
@@ -96,7 +140,7 @@ local S = {
     zoom    = imgui.new.int(math.max(ZMIN, math.min(ZMAX, cfg.radar.zoom))),
     tilt    = imgui.new.int(math.max(TMIN, math.min(TMAX, cfg.radar.tilt))),
     preview = imgui.new.bool(false),
-    status  = "",
+    details = imgui.new.bool(false),
 }
 
 local function saveRadarCfg()
@@ -114,7 +158,7 @@ local function apply()
     saveRadarCfg()
 end
 
--- ===== UI =====
+-- ===================== UI =====================
 imgui.OnInitialize(function()
     local st, c = imgui.GetStyle(), imgui.GetStyle().Colors
     st.WindowRounding, st.FrameRounding, st.GrabRounding = 10 * DPI, 6 * DPI, 6 * DPI
@@ -134,8 +178,8 @@ local function widthLong() return imgui.GetContentRegionAvail().x - 150 * DPI en
 imgui.OnFrame(function() return S.menu[0] end, function()
     local io = imgui.GetIO()
     imgui.SetNextWindowPos(imgui.ImVec2(io.DisplaySize.x / 2, io.DisplaySize.y / 2), imgui.Cond.Appearing, imgui.ImVec2(0.5, 0.5))
-    imgui.SetNextWindowSize(imgui.ImVec2(520 * DPI, 400 * DPI), imgui.Cond.Always)
-    imgui.Begin("##hexedradar", S.menu, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize + imgui.WindowFlags.NoScrollbar)
+    imgui.SetNextWindowSize(imgui.ImVec2(520 * DPI, 420 * DPI), imgui.Cond.Always)
+    imgui.Begin("##hexedradar", S.menu, imgui.WindowFlags.NoTitleBar + imgui.WindowFlags.NoResize)
 
     local title = "RADAR ADJUSTER"
     imgui.SetCursorPosX((imgui.GetWindowWidth() - imgui.CalcTextSize(title).x) / 2)
@@ -151,7 +195,7 @@ imgui.OnFrame(function() return S.menu[0] end, function()
     if imgui.InputInt("##tiltv", S.tilt, 1, 5) then apply() end
     imgui.PopItemWidth()
 
-    if R.kind == "multisa" then
+    if R.kind == "multisa" and R.f and R.f.preview then
         if imgui.Checkbox("Live Preview", S.preview) then nPreview(S.preview[0]) end
     end
 
@@ -160,29 +204,36 @@ imgui.OnFrame(function() return S.menu[0] end, function()
     end
     imgui.SameLine()
     if imgui.Button("Close", imgui.ImVec2(130 * DPI, 35 * DPI)) then S.menu[0] = false; nPreview(false) end
+    imgui.SameLine()
+    if imgui.Button("Retry link", imgui.ImVec2(130 * DPI, 35 * DPI)) then initBackend(); apply() end
 
     imgui.Separator()
+    imgui.Text("Backend: " .. R.kind)
     local z, t = nGet()
-    imgui.Text(("Backend: %s"):format(R.kind))
     if z then imgui.Text(("Native values: zoom %d  tilt %d"):format(z, t)) end
     if R.kind == "hexed" then
-        local ok, hk = pcall(function() return R.lib.HexedRadar_Status() end)
-        hk = ok and hk or 0
-        imgui.Text(("Hooks: zoom %s  tilt %s"):format(bit.band(hk,1)~=0 and "ON" or "OFF", bit.band(hk,2)~=0 and "ON" or "OFF"))
-        if hk ~= 3 then imgui.TextWrapped("A hook is OFF: this client's libGTASA has no matching CRadar symbol. See logcat tag HexedRadar.") end
+        local hk = nStatus()
+        imgui.Text(("Hooks: zoom %s  tilt %s"):format(bit.band(hk, 1) ~= 0 and "ON" or "OFF", bit.band(hk, 2) ~= 0 and "ON" or "OFF"))
+        if hk ~= 3 then imgui.TextWrapped("A hook is OFF: this client's libGTASA has no matching CRadar symbol (see HexedRadar_log.txt).") end
+    elseif R.kind == "none" then
+        imgui.TextWrapped("libHexedRadar.so is not loaded by AML. Check: file is in the AML mods folder of THIS client, Modloader ON, game restarted after copying. Tap Retry link after fixing.")
     end
-    if R.kind == "none" then
-        imgui.TextWrapped("No radar library found. Put libHexedRadar.so in the AML mods folder.")
+    imgui.Checkbox("Show link details", S.details)
+    if S.details[0] then
+        for i = math.max(1, #R.log - 14), #R.log do imgui.TextWrapped(R.log[i]) end
     end
     imgui.End()
 end)
 
--- ===== main =====
+-- ===================== main =====================
 function main()
     while not isSampAvailable or not isSampAvailable() do wait(100) end
     initBackend()
     apply()
-    sampRegisterChatCommand("hradar", function() S.menu[0] = not S.menu[0] end)
+    sampRegisterChatCommand("hradar", function()
+        S.menu[0] = not S.menu[0]
+        if S.menu[0] and R.kind == "none" then initBackend(); apply() end
+    end)
     imgui.Process = true
     while true do wait(0) imgui.Process = true end
 end
