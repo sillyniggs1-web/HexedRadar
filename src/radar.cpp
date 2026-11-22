@@ -37,7 +37,7 @@ static void hxlog(int prio, const char* fmt, ...) {
 #define LOGI(...) hxlog(ANDROID_LOG_INFO,  __VA_ARGS__)
 #define LOGE(...) hxlog(ANDROID_LOG_ERROR, __VA_ARGS__)
 
-MYMOD(net.hexedstudio.radar, Hexed Radar, 1.2.0, HEXED Studio)
+MYMOD(net.hexedstudio.radar, Hexed Radar, 1.2.1, HEXED Studio)
 
 namespace {
 
@@ -92,11 +92,17 @@ bool getProj(Proj& p, int scope = 1) {
     return true;
 }
 
-// tilt the radar plane about its horizontal centre line: far (top) side shrinks and is squashed
+// tilt the radar plane about its horizontal centre line: far (top) side shrinks, near (bottom) side grows.
+// The map sections are HUGE quads (several radar radii wide), so their corners sit far outside |v| = 1.
+// A plain perspective divide has a singularity/fold there and makes the whole map texture vanish, so the
+// depth term is clamped: it behaves like a real perspective inside the disc and stays linear (never
+// negative, never folded) for far-away corners.
 inline void proj(const Proj& p, float& x, float& y) {
     const float v = (y - p.cy) / p.h;                // -1 top .. +1 bottom
-    float depth = 1.0f - 0.30f * v * p.s;            // v<0 (far) => depth>1
-    if (depth < 0.35f) depth = 0.35f;
+    float vd = v;
+    if (vd < -2.0f) vd = -2.0f;
+    if (vd >  2.0f) vd =  2.0f;
+    const float depth = 1.0f - 0.25f * vd * p.s;     // 0.5 .. 1.5 for tilt 60: always > 0
     x = p.cx + (x - p.cx) / depth;
     y = p.cy + p.h * (v * p.c) / depth;
     g_cntProj.fetch_add(1);
@@ -303,6 +309,6 @@ HX_EXPORT int  HexedRadar_GeomSource()      { return g_geomSrc.load(); }        
 HX_EXPORT unsigned HexedRadar_Counter(int w) { return w == 0 ? g_cntMap.load() : (w == 1 ? g_cntBlips.load() : g_cntProj.load()); }
 }
 
-ON_MOD_PRELOAD()   { remove(HX_LOG_PATH); LOGI("OnModPreLoad HexedRadar 1.2.0"); }
+ON_MOD_PRELOAD()   { remove(HX_LOG_PATH); LOGI("OnModPreLoad HexedRadar 1.2.1"); }
 ON_MOD_LOAD()      { LOGI("OnModLoad"); installHooks(); }
 ON_ALL_MODS_LOAD() { if (g_hooks.load() != 15) { LOGI("retry after all mods loaded"); installHooks(); } }
