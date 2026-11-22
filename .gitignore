@@ -1,6 +1,2 @@
-obj/
-libs/
-jni/include/
+build/
 dist/
-*.o
-*.so
