@@ -25,6 +25,7 @@ local SYM_HEXED = {
     getTilt = { "HexedRadar_GetTilt",  "int(*)(void)" },
     enabled = { "HexedRadar_SetEnabled", "void(*)(int)", true },
     status  = { "HexedRadar_Status",   "int(*)(void)", true },
+    geom    = { "HexedRadar_GeomSource", "int(*)(void)", true },
 }
 local SYM_MULTI = {
     setZoom = { "_ZN7Radar3D7SetZoomEi", "void(*)(int)" },
@@ -213,8 +214,12 @@ imgui.OnFrame(function() return S.menu[0] end, function()
     if z then imgui.Text(("Native values: zoom %d  tilt %d"):format(z, t)) end
     if R.kind == "hexed" then
         local hk = nStatus()
-        imgui.Text(("Hooks: zoom %s  tilt %s"):format(bit.band(hk, 1) ~= 0 and "ON" or "OFF", bit.band(hk, 2) ~= 0 and "ON" or "OFF"))
-        if hk ~= 3 then imgui.TextWrapped("A hook is OFF: this client's libGTASA has no matching CRadar symbol (see HexedRadar_log.txt).") end
+        local function on(b) return bit.band(hk, b) ~= 0 and "ON" or "OFF" end
+        imgui.Text(("Hooks: zoom %s  tilt map %s  tilt blips %s  HUD scope %s"):format(on(1), on(2), on(4), on(8)))
+        local g = 0
+        if R.f and R.f.geom then local ok, v = pcall(function() return R.f.geom() end); if ok then g = v end end
+        imgui.Text("Radar geometry: " .. (g == 1 and "radar widget" or (g == 2 and "mask polygon" or "not found yet")))
+        if hk ~= 15 then imgui.TextWrapped("A hook is OFF: see HexedRadar_log.txt (symbol missing or hook failed).") end
     elseif R.kind == "none" then
         imgui.TextWrapped("libHexedRadar.so is not loaded by AML. Check: file is in the AML mods folder of THIS client, Modloader ON, game restarted after copying. Tap Retry link after fixing.")
     end
