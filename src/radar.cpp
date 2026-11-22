@@ -10,10 +10,21 @@
 #include <math.h>
 
 #define TAG "HexedRadar"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#include <stdio.h>
+#include <stdarg.h>
+#ifndef HX_LOG_PATH
+#define HX_LOG_PATH "/storage/emulated/0/HexedRadar_log.txt"   // same idea as HexedVoiceMod_log.txt
+#endif
+static void hxlog(int prio, const char* fmt, ...) {
+    char buf[512];
+    va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
+    __android_log_print(prio, TAG, "%s", buf);
+    if (FILE* f = fopen(HX_LOG_PATH, "a")) { fprintf(f, "[HexedRadar] %s\n", buf); fclose(f); }
+}
+#define LOGI(...) hxlog(ANDROID_LOG_INFO,  __VA_ARGS__)
+#define LOGE(...) hxlog(ANDROID_LOG_ERROR, __VA_ARGS__)
 
-MYMOD(net.hexedstudio.radar, Hexed Radar, 1.0.0, HEXED Studio)
+MYMOD(net.hexedstudio.radar, Hexed Radar, 1.0.1, HEXED Studio)
 
 namespace {
 
@@ -69,21 +80,24 @@ HX_EXPORT void HexedRadar_SetEnabled(int o) { g_on.store(o ? 1 : 0); }
 HX_EXPORT int  HexedRadar_Status()          { return g_hooks.load(); }   // 3 = both hooks active
 }
 
-ON_MOD_LOAD() {
+static void installHooks() {
     void* gta = findGTASA();
     if (!gta) { LOGE("libGTASA.so handle not found"); return; }
-
-    uintptr_t a = aml->GetSym(gta, "_ZN6CRadar35TransformRealWorldPointToRadarSpaceER9CVector2DRKS0_");
-    uintptr_t b = aml->GetSym(gta, "_ZN6CRadar32TransformRadarPointToScreenSpaceER9CVector2DRKS0_");
-    LOGI("symbols: RealToRadar=%p RadarToScreen=%p", (void*)a, (void*)b);
-
-    if (a && aml->Hook((void*)a, (void*)RealToRadar_hook, (void**)&RealToRadar_orig))
-        g_hooks.fetch_or(1);
-    else LOGE("zoom hook not installed (symbol missing or hook failed)");
-
-    if (b && aml->Hook((void*)b, (void*)RadarToScreen_hook, (void**)&RadarToScreen_orig))
-        g_hooks.fetch_or(2);
-    else LOGE("tilt hook not installed (symbol missing or hook failed)");
-
-    LOGI("loaded, hooks=%d", g_hooks.load());
+    if (!(g_hooks.load() & 1)) {
+        uintptr_t a = aml->GetSym(gta, "_ZN6CRadar35TransformRealWorldPointToRadarSpaceER9CVector2DRKS0_");
+        LOGI("symbol RealToRadar = %p", (void*)a);
+        if (a && aml->Hook((void*)a, (void*)RealToRadar_hook, (void**)&RealToRadar_orig)) g_hooks.fetch_or(1);
+        else LOGE("zoom hook not installed (symbol missing or hook failed)");
+    }
+    if (!(g_hooks.load() & 2)) {
+        uintptr_t b = aml->GetSym(gta, "_ZN6CRadar32TransformRadarPointToScreenSpaceER9CVector2DRKS0_");
+        LOGI("symbol RadarToScreen = %p", (void*)b);
+        if (b && aml->Hook((void*)b, (void*)RadarToScreen_hook, (void**)&RadarToScreen_orig)) g_hooks.fetch_or(2);
+        else LOGE("tilt hook not installed (symbol missing or hook failed)");
+    }
+    LOGI("hooks=%d", g_hooks.load());
 }
+
+ON_MOD_PRELOAD() { remove(HX_LOG_PATH); LOGI("OnModPreLoad HexedRadar 1.0.1"); }
+ON_MOD_LOAD()    { LOGI("OnModLoad"); installHooks(); }
+ON_ALL_MODS_LOAD() { if (g_hooks.load() != 3) { LOGI("retry after all mods loaded"); installHooks(); } }
