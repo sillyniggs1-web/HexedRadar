@@ -23,3 +23,14 @@ Push the folder, run **Actions -> Build HexedRadar AML mod**, take the `HexedRad
 NOT built or run yet. Unknowns: (1) whether Nezuko's and Zan's `libGTASA.so` export the two `CRadar` symbols
 (if not, the menu shows "Hooks ... OFF" and logcat tag `HexedRadar` says which); (2) the tilt formula is a first guess and
 may need extra hooks for the radar mask, blips and north marker; (3) whether the Zan loader uses the same AML API.
+
+
+## v1.2.0 changes (analysis of the Zan APK's libGTASA.so)
+- Tilt centre now comes from the radar widget `CTouchInterface::m_pWidgets[161]` rect (+0x20/+0x24/+0x28/+0x2c),
+  the same data CHud::DrawRadar / DrawRadarMask use. `CRadar::m_radarRect` is a WORLD rect and is no longer used
+  (it made blips fly off screen when tilt > 0). Mask polygon bounds remain as fallback.
+- New hook on `CHud::DrawRadar`: zoom/tilt only apply inside it, so the pause map (`Menu_MapRender` -> `DrawBlips`) is untouched.
+- Ring / north quad (`CSprite2d::Draw` 8-float variant) is tilted together with the map.
+- Menu: full status is 15 (zoom, tilt map, tilt blips, HUD scope); the false "hook OFF" warning (status 7) is gone;
+  shows which geometry source is in use.
+- Not run on a device yet: send HexedRadar_log.txt and a short video if tilt still looks off.
