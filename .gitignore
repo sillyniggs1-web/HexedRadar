@@ -1,0 +1,6 @@
+obj/
+libs/
+jni/include/
+dist/
+*.o
+*.so
