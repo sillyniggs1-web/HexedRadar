@@ -82,8 +82,10 @@ static_assert(sizeof(RwV) == 28, "RwOpenGLVertex must be 28 bytes");
 std::atomic<int> g_zoom{100};     // 50..250, 100 = stock
 std::atomic<int> g_tilt{0};       // 0..60 degrees
 std::atomic<int> g_on{1};
-std::atomic<int> g_hooks{0};      // bit0 CHud::DrawRadar scope | bit1 zoom (DrawRadarMap+DrawBlips) | bit2 tilt (3x RwIm2D submit)
+std::atomic<int> g_hooks{0};      // bit0 CHud::DrawRadar scope | bit1 zoom (DrawRadarMap+DrawBlips) | bit2 tilt (3x RwIm2D submit + DrawRadarSection + DrawAreaOnRadar)
 std::atomic<int> g_inHud{0};      // >0 while inside CHud::DrawRadar
+std::atomic<int> g_inPlane{0};    // >0 while drawing the MAP PLANE (DrawRadarSection / DrawAreaOnRadar): fully projected
+std::atomic<int> g_inBlips{0};    // >0 while inside CRadar::DrawBlips: only the blip POSITION follows the tilt (icon keeps its size/shape)
 std::atomic<int> g_geomSrc{0};    // 0 none, 1 radar widget (vtable verified), 2 radar widget (index fallback, vtable unknown)
 std::atomic<int> g_widgetIdx{-1};
 std::atomic<unsigned> g_cntHud{0}, g_cntMap{0}, g_cntBlips{0}, g_cntProj{0}, g_cntSub{0};
@@ -199,7 +201,9 @@ void DrawBlips_hook(float a) {
     if (g_inHud.load() <= 0) { DrawBlips_orig(a); return; }     // DrawBlips is also used by the pause map (Menu_MapRender)
     g_cntBlips.fetch_add(1);
     const float old = scaleRange();
+    g_inBlips.fetch_add(1);
     DrawBlips_orig(a);
+    g_inBlips.fetch_sub(1);
     if (old != 0.f && g_range) *g_range = old;
 }
 
@@ -214,15 +218,39 @@ Prim_t    Prim_orig = nullptr;
 IdxPrim_t Idx_orig  = nullptr;
 Tri_t     Tri_orig  = nullptr;
 
-// copies the vertices to a scratch buffer and projects them; returns the buffer or the original pointer
+typedef void (*Section_t)(int, int, int);
+typedef void (*Area_t)(const void*, const void*, bool);
+Section_t Section_orig = nullptr;
+Area_t    Area_orig    = nullptr;
+struct PlaneScope { PlaneScope() { g_inPlane.fetch_add(1); } ~PlaneScope() { g_inPlane.fetch_sub(1); } };
+void Section_hook(int a, int b, int c)                    { PlaneScope ps; Section_orig(a, b, c); }
+void Area_hook(const void* r, const void* col, bool f)     { PlaneScope ps; Area_orig(r, col, f); }
+
+// What the reference radar does: the radar frame / mask / ring / N marker stay exactly where they are; only the map plane
+// tilts (far side compressed, near side magnified) and blips are MOVED to where the tilted map puts them, without being distorted.
+//   map plane  -> every vertex projected
+//   blip       -> the centroid of the primitive is projected and the whole primitive is shifted rigidly by that delta
+//   anything else (mask, ring, decorations) -> untouched
 RwV* tilted(RwV* v, int n) {
     Proj p;
-    if (!v || n <= 0) return v;
+    if (!v || n <= 0 || n > MAXV) return v;
+    const bool plane = g_inPlane.load() > 0;
+    const bool blip  = !plane && g_inBlips.load() > 0;
+    if (!plane && !blip) return v;
     if (!getProj(p)) return v;
     g_cntSub.fetch_add(1);
-    if (n > MAXV) return v;
     memcpy(g_vb, v, (size_t)n * sizeof(RwV));
-    for (int i = 0; i < n; i++) proj(p, g_vb[i].x, g_vb[i].y);
+    if (plane) {
+        for (int i = 0; i < n; i++) proj(p, g_vb[i].x, g_vb[i].y);
+    } else {
+        float cx = 0, cy = 0;
+        for (int i = 0; i < n; i++) { cx += v[i].x; cy += v[i].y; }
+        cx /= (float)n; cy /= (float)n;
+        float nx = cx, ny = cy;
+        proj(p, nx, ny);
+        const float dx = nx - cx, dy = ny - cy;
+        for (int i = 0; i < n; i++) { g_vb[i].x += dx; g_vb[i].y += dy; }
+    }
     return g_vb;
 }
 
@@ -331,7 +359,9 @@ void installHooks() {
         bool a = hookSym("_Z28RwIm2DRenderPrimitive_BUGFIX15RwPrimitiveTypeP14RwOpenGLVertexi", (void*)Prim_hook, (void**)&Prim_orig, false);
         bool b = hookSym("_Z35RwIm2DRenderIndexedPrimitive_BUGFIX15RwPrimitiveTypeP14RwOpenGLVertexiPti", (void*)Idx_hook, (void**)&Idx_orig, false);
         bool c = hookSym("_Z20RwIm2DRenderTriangleP14RwOpenGLVertexiiii", (void*)Tri_hook, (void**)&Tri_orig, false);
-        if (a && b && c) g_hooks.fetch_or(HOOK_TILT);
+        bool d = hookSym("_ZN6CRadar16DrawRadarSectionEiii", (void*)Section_hook, (void**)&Section_orig, false);
+        bool e = hookSym("_ZN6CRadar15DrawAreaOnRadarERK5CRectRK5CRGBAb", (void*)Area_hook, (void**)&Area_orig, false);
+        if (a && b && c && d && e) g_hooks.fetch_or(HOOK_TILT);
     }
     LOGI("hooks=%d (1=scope 2=zoom 4=tilt, 7=all)", g_hooks.load());
 }
