@@ -1,11 +1,12 @@
 script_name("Hexed Radar Adjuster")
 script_author("HEXED Studio")
-script_version("1.2")
+script_version("2.0")
 if script_properties then pcall(script_properties, "work-in-pause") end
 require "lib.moonloader"
 local imgui  = require("mimgui")
 local inicfg = require("inicfg")
 local ffi    = require("ffi")
+local bit    = require("bit")
 local DPI    = MONET_DPI_SCALE or 1
 
 -- ===================== native link (same method as HexedVoiceMod_Menu) =====================
@@ -26,6 +27,8 @@ local SYM_HEXED = {
     enabled = { "HexedRadar_SetEnabled", "void(*)(int)", true },
     status  = { "HexedRadar_Status",   "int(*)(void)", true },
     geom    = { "HexedRadar_GeomSource", "int(*)(void)", true },
+    widx    = { "HexedRadar_WidgetIndex", "int(*)(void)", true },
+    counter = { "HexedRadar_Counter", "unsigned(*)(int)", true },
 }
 local SYM_MULTI = {
     setZoom = { "_ZN7Radar3D7SetZoomEi", "void(*)(int)" },
@@ -215,11 +218,16 @@ imgui.OnFrame(function() return S.menu[0] end, function()
     if R.kind == "hexed" then
         local hk = nStatus()
         local function on(b) return bit.band(hk, b) ~= 0 and "ON" or "OFF" end
-        imgui.Text(("Hooks: zoom %s  tilt map %s  tilt blips %s  HUD scope %s"):format(on(1), on(2), on(4), on(8)))
-        local g = 0
+        imgui.Text(("Hooks: scope %s  zoom %s  tilt %s"):format(on(1), on(2), on(4)))
+        local g, wi = 0, -1
         if R.f and R.f.geom then local ok, v = pcall(function() return R.f.geom() end); if ok then g = v end end
-        imgui.Text("Radar geometry: " .. (g == 1 and "radar widget" or (g == 2 and "mask polygon" or "not found yet")))
-        if hk ~= 15 then imgui.TextWrapped("A hook is OFF: see HexedRadar_log.txt (symbol missing or hook failed).") end
+        if R.f and R.f.widx then local ok, v = pcall(function() return R.f.widx() end); if ok then wi = v end end
+        imgui.Text(("Radar widget: %s (index %d)"):format(g == 1 and "found by vtable" or (g == 2 and "by index only" or "not found yet"), wi))
+        if R.f and R.f.counter then
+            local ok, a, b, c, d = pcall(function() local f = R.f.counter; return f(0), f(1), f(3), f(4) end)
+            if ok then imgui.Text(("Frames %d  map %d  tilted draws %d  vertices %d"):format(tonumber(a), tonumber(b), tonumber(c), tonumber(d))) end
+        end
+        if hk ~= 7 then imgui.TextWrapped("A hook is OFF: see HexedRadar_log.txt (it names the symbol / PLT slot that failed).") end
     elseif R.kind == "none" then
         imgui.TextWrapped("libHexedRadar.so is not loaded by AML. Check: file is in the AML mods folder of THIS client, Modloader ON, game restarted after copying. Tap Retry link after fixing.")
     end
@@ -240,5 +248,9 @@ function main()
         if S.menu[0] and R.kind == "none" then initBackend(); apply() end
     end)
     imgui.Process = true
-    while true do wait(0) imgui.Process = true end
+    local t = os.clock()
+    while true do
+        wait(0); imgui.Process = true
+        if os.clock() - t > 3 then t = os.clock(); if R.kind ~= "none" then nEnabled(S.enabled[0]); if S.enabled[0] then nSet(S.zoom[0], S.tilt[0]) else nSet(100, 0) end end end   -- re-send values (survives a mod reload)
+    end
 end
