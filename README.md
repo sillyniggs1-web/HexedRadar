@@ -15,7 +15,7 @@
 - Hooks by GOT slot (found at runtime from the ELF dynamic section by symbol name), not inline: v1 inline-hooked prologues that start with an IT block
   or a PC-relative ldr and the RwIm2D `_BUGFIX` exports are 4-byte thunks. Inline fallback is used only for DrawRadar/DrawRadarMap/DrawBlips.
 - Zoom scales `m_radarRange` around DrawRadarMap and DrawBlips, only inside `CHud::DrawRadar` (pause map untouched).
-- Tilt matches the reference client: the radar frame, mask, ring and N marker stay fixed; only the map plane (DrawRadarSection, DrawAreaOnRadar) is projected, and blips are moved to their tilted position without being distorted.
+- Tilt (reference behaviour): the circle mask, frame, ring and N marker never change. Only the map plane is perspective-projected (and clipped to the radar rect); the visible range is widened by the same factor so Radar Zoom stays separate; blips follow the map but are clamped inside the circle and keep their size.
 - The radar widget is located by its `CWidgetRadar` vtable (index 161 on this build) before its rect is trusted.
 - Menu shows: hooks (scope / zoom / tilt, 7 = all), widget index, frame/draw/vertex counters. Log: `/storage/emulated/0/HexedRadar_log.txt`.
 
