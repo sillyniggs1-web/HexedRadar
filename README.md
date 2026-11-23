@@ -1,36 +1,26 @@
-# Hexed Radar (AML mod) - radar zoom + tilt
+# Hexed Radar (AML mod) v2.0 - radar zoom + tilt
 
-AML mod `libHexedRadar.so` (armeabi-v7a, for Nezuko / Zan and other 32-bit SA-MP Android clients) plus a MoonLoader menu.
-Built on the same layout as Discord_RPC_AML: `src/`, `third_party/aml/`, CMake, GitHub Actions.
-Clean-room code: it hooks the stock `CRadar` functions of `libGTASA.so`. It contains no code from any other client.
+`libHexedRadar.so` (armeabi-v7a, AML) + MoonLoader menu `Hexed_Radar_Adjuster.lua` (chat command `/hradar`).
 
-## What it does
-- `CRadar::TransformRealWorldPointToRadarSpace` hook -> Main Radar Zoom (50..250, 100 = stock)
-- `CRadar::TransformRadarPointToScreenSpace` hook -> Radar Tilt (0..60 degrees)
-- Exported C API for Lua: `HexedRadar_SetZoom/SetTilt/GetZoom/GetTilt/SetEnabled/Status`
+## How the PC HUD radar works (verified in Zan libGTASA.so / libSAMP.so)
+- The PC HUD has no radar renderer of its own. libSAMP inline-hooks `CWidgetRadar::Update`: it calls the original, then (PC HUD flag set)
+  rewrites the radar widget rect `CTouchInterface::m_pWidgets[161]` (+0x20 x0, +0x24 y0, +0x28 x1, +0x2c y1) to the PC layout
+  (40..134 / 640 of the width, 344..420 / 448 of the height) and mirrors it to +0x34..+0x40.
+- Stock `CHud::DrawRadar`, `DrawRadarMap/Mask/Section`, `DrawBlips`, `DrawRadarSprite`, `DrawRotatingRadarSprite`, `DrawCoordBlip`,
+  `DrawEntityBlip`, `ShowRadarTraceWithHeight`, `DrawAreaOnRadar`, `DrawRadarGangOverlay`, `TransformRadarPointToScreenSpace` all read that rect inline.
+- Range: `CRadar::DrawMap` writes `CRadar::m_radarRange` each frame; `DrawRadarMap` and `DrawBlips` read it.
+- Everything ends in `RwIm2DRenderIndexedPrimitive_BUGFIX`, `RwIm2DRenderPrimitive_BUGFIX` or `RwIm2DRenderTriangle` (RwOpenGLVertex = 28 bytes, x@0 y@4).
 
-## Install
-```
-<AML mods folder>/libHexedRadar.so
-<MonetLoader scripts folder>/Hexed_Radar_Adjuster.lua      (chat command: /hradar)
-```
-Settings are saved by the Lua script in `Hexed Radar.ini` and reapplied each launch.
+## What v2 does differently
+- Hooks by GOT slot (found at runtime from the ELF dynamic section by symbol name), not inline: v1 inline-hooked prologues that start with an IT block
+  or a PC-relative ldr and the RwIm2D `_BUGFIX` exports are 4-byte thunks. Inline fallback is used only for DrawRadar/DrawRadarMap/DrawBlips.
+- Zoom scales `m_radarRange` around DrawRadarMap and DrawBlips, only inside `CHud::DrawRadar` (pause map untouched).
+- Tilt projects the vertices at the three RwIm2D submit calls, so every radar primitive is covered (v1 missed DrawRect, Draw2DPolygon, DrawAreaOnRadar).
+- The radar widget is located by its `CWidgetRadar` vtable (index 161 on this build) before its rect is trusted.
+- Menu shows: hooks (scope / zoom / tilt, 7 = all), widget index, frame/draw/vertex counters. Log: `/storage/emulated/0/HexedRadar_log.txt`.
 
-## Build
-Push the folder, run **Actions -> Build HexedRadar AML mod**, take the `HexedRadar_AML` artifact.
+## Build / install
+Push, run Actions -> "Build HexedRadar AML mod", take the artifact. `libHexedRadar.so` -> AML mods folder; Lua -> MonetLoader scripts.
 
 ## Status
-NOT built or run yet. Unknowns: (1) whether Nezuko's and Zan's `libGTASA.so` export the two `CRadar` symbols
-(if not, the menu shows "Hooks ... OFF" and logcat tag `HexedRadar` says which); (2) the tilt formula is a first guess and
-may need extra hooks for the radar mask, blips and north marker; (3) whether the Zan loader uses the same AML API.
-
-
-## v1.2.0 changes (analysis of the Zan APK's libGTASA.so)
-- Tilt centre now comes from the radar widget `CTouchInterface::m_pWidgets[161]` rect (+0x20/+0x24/+0x28/+0x2c),
-  the same data CHud::DrawRadar / DrawRadarMask use. `CRadar::m_radarRect` is a WORLD rect and is no longer used
-  (it made blips fly off screen when tilt > 0). Mask polygon bounds remain as fallback.
-- New hook on `CHud::DrawRadar`: zoom/tilt only apply inside it, so the pause map (`Menu_MapRender` -> `DrawBlips`) is untouched.
-- Ring / north quad (`CSprite2d::Draw` 8-float variant) is tilted together with the map.
-- Menu: full status is 15 (zoom, tilt map, tilt blips, HUD scope); the false "hook OFF" warning (status 7) is gone;
-  shows which geometry source is in use.
-- Not run on a device yet: send HexedRadar_log.txt and a short video if tilt still looks off.
+Static analysis + compile check only; NOT run on a device. Tilt is a per-triangle projection (textures are not perspective-correct on big map quads).
