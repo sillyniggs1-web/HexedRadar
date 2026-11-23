@@ -15,7 +15,7 @@
 - Hooks by GOT slot (found at runtime from the ELF dynamic section by symbol name), not inline: v1 inline-hooked prologues that start with an IT block
   or a PC-relative ldr and the RwIm2D `_BUGFIX` exports are 4-byte thunks. Inline fallback is used only for DrawRadar/DrawRadarMap/DrawBlips.
 - Zoom scales `m_radarRange` around DrawRadarMap and DrawBlips, only inside `CHud::DrawRadar` (pause map untouched).
-- Tilt projects the vertices at the three RwIm2D submit calls, so every radar primitive is covered (v1 missed DrawRect, Draw2DPolygon, DrawAreaOnRadar).
+- Tilt matches the reference client: the radar frame, mask, ring and N marker stay fixed; only the map plane (DrawRadarSection, DrawAreaOnRadar) is projected, and blips are moved to their tilted position without being distorted.
 - The radar widget is located by its `CWidgetRadar` vtable (index 161 on this build) before its rect is trusted.
 - Menu shows: hooks (scope / zoom / tilt, 7 = all), widget index, frame/draw/vertex counters. Log: `/storage/emulated/0/HexedRadar_log.txt`.
 
@@ -23,4 +23,4 @@
 Push, run Actions -> "Build HexedRadar AML mod", take the artifact. `libHexedRadar.so` -> AML mods folder; Lua -> MonetLoader scripts.
 
 ## Status
-Static analysis + compile check only; NOT run on a device. Tilt is a per-triangle projection (textures are not perspective-correct on big map quads).
+Static analysis + compile check only; NOT run on a device. Map tilt is a per-triangle projection (textures are not perspective-correct on big map quads).
